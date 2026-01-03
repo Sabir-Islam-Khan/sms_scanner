@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:telephony/telephony.dart';
+import 'package:another_telephony/telephony.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:permission_handler/permission_handler.dart';
