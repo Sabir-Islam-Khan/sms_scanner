@@ -1,51 +1,113 @@
 import 'package:flutter/material.dart';
+import 'package:telephony/telephony.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import 'package:permission_handler/permission_handler.dart';
 
 void main() {
   runApp(const MyApp());
 }
 
+// Background message handler - must be a top-level function
+@pragma('vm:entry-point')
+void backgroundMessageHandler(SmsMessage message) {
+  // Process the SMS in background
+  _processSms(message);
+}
+
+// Process SMS and send to API
+void _processSms(SmsMessage message) async {
+  String? sender = message.address;
+  String? body = message.body;
+
+  if (body == null || sender == null) return;
+
+  // Check if the SMS is from bKash
+  if (body.toLowerCase().contains('bkash') ||
+      body.toLowerCase().contains('trxid')) {
+    print('Received bKash SMS: $body');
+
+    // Parse amount and transaction ID
+    Map<String, dynamic>? data = parseBkashSms(body);
+
+    if (data != null) {
+      // Send to API
+      await sendToApi(data['amount'], data['trxId']);
+    }
+  }
+}
+
+// Parse bKash SMS to extract amount and TrxID
+Map<String, dynamic>? parseBkashSms(String smsBody) {
+  try {
+    // Example SMS: You have received Tk 2,000.00 from 01776800874. Fee Tk 0.00. Balance Tk 5,087.84. TrxID CLP5GGO1NZ at 25/12/2025 19:18
+
+    // Extract amount - looking for "received Tk X.XX"
+    RegExp amountRegex = RegExp(r'received Tk\s*([\d,]+\.?\d*)');
+    Match? amountMatch = amountRegex.firstMatch(smsBody);
+
+    // Extract TrxID - looking for "TrxID XXXXXXXXXX"
+    RegExp trxIdRegex = RegExp(r'TrxID\s+([A-Z0-9]+)');
+    Match? trxIdMatch = trxIdRegex.firstMatch(smsBody);
+
+    if (amountMatch != null && trxIdMatch != null) {
+      String amountStr = amountMatch.group(1)!.replaceAll(',', '');
+      double amount = double.parse(amountStr);
+      String trxId = trxIdMatch.group(1)!;
+
+      print('Parsed - Amount: $amount, TrxID: $trxId');
+
+      return {'amount': amount, 'trxId': trxId};
+    }
+  } catch (e) {
+    print('Error parsing SMS: $e');
+  }
+
+  return null;
+}
+
+// Send transaction data to API
+Future<void> sendToApi(double amount, String trxId) async {
+  try {
+    final url = Uri.parse('http://143.244.191.183:3003/transactions');
+
+    final response = await http.post(
+      url,
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'transaction_id': trxId,
+        'amount': amount,
+        'method': 'BKASH',
+      }),
+    );
+
+    if (response.statusCode == 200 || response.statusCode == 201) {
+      print('Successfully sent to API: TrxID=$trxId, Amount=$amount');
+    } else {
+      print('API Error: ${response.statusCode} - ${response.body}');
+    }
+  } catch (e) {
+    print('Error sending to API: $e');
+  }
+}
+
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
-  // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter Demo',
+      title: 'SMS Scanner',
       theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: .fromSeed(seedColor: Colors.deepPurple),
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      home: const MyHomePage(title: 'bKash SMS Scanner'),
     );
   }
 }
 
 class MyHomePage extends StatefulWidget {
   const MyHomePage({super.key, required this.title});
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
 
   final String title;
 
@@ -54,68 +116,151 @@ class MyHomePage extends StatefulWidget {
 }
 
 class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+  final Telephony telephony = Telephony.instance;
+  bool _permissionsGranted = false;
+  String _status = 'Checking permissions...';
+  List<String> _recentMessages = [];
 
-  void _incrementCounter() {
-    setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
-    });
+  @override
+  void initState() {
+    super.initState();
+    _requestPermissions();
+  }
+
+  Future<void> _requestPermissions() async {
+    // Request SMS permissions
+    final smsStatus = await Permission.sms.request();
+    final phoneStatus = await Permission.phone.request();
+
+    if (smsStatus.isGranted && phoneStatus.isGranted) {
+      setState(() {
+        _permissionsGranted = true;
+        _status = 'Permissions granted. Listening for bKash SMS...';
+      });
+
+      // Start listening for SMS
+      _startListening();
+    } else {
+      setState(() {
+        _permissionsGranted = false;
+        _status = 'Permissions denied. Please grant SMS permissions.';
+      });
+    }
+  }
+
+  void _startListening() {
+    // Listen for incoming SMS in foreground
+    telephony.listenIncomingSms(
+      onNewMessage: (SmsMessage message) {
+        _processSms(message);
+        setState(() {
+          _recentMessages.insert(
+            0,
+            'From: ${message.address}\n${message.body}\n---',
+          );
+          if (_recentMessages.length > 10) {
+            _recentMessages.removeLast();
+          }
+        });
+      },
+      onBackgroundMessage: backgroundMessageHandler,
+      listenInBackground: true,
+    );
+  }
+
+  Future<void> _testWithSampleSms() async {
+    String sampleSms =
+        'You have received Tk 2,000.00 from 01776800874. Fee Tk 0.00. Balance Tk 5,087.84. TrxID CLP5GGO1NZ at 25/12/2025 19:18';
+
+    Map<String, dynamic>? data = parseBkashSms(sampleSms);
+
+    if (data != null) {
+      await sendToApi(data['amount'], data['trxId']);
+
+      setState(() {
+        _recentMessages.insert(0, 'TEST SMS:\n$sampleSms\n---');
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Test SMS processed! Amount: ${data['amount']}, TrxID: ${data['trxId']}',
+          ),
+        ),
+      );
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
     return Scaffold(
       appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
         title: Text(widget.title),
       ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
         child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: .center,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('You have pushed the button this many times:'),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Status',
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Icon(
+                          _permissionsGranted
+                              ? Icons.check_circle
+                              : Icons.error,
+                          color: _permissionsGranted
+                              ? Colors.green
+                              : Colors.red,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(child: Text(_status)),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton.icon(
+              onPressed: _testWithSampleSms,
+              icon: const Icon(Icons.send),
+              label: const Text('Test with Sample bKash SMS'),
+            ),
+            const SizedBox(height: 16),
+            Text('Recent SMS:', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            Expanded(
+              child: _recentMessages.isEmpty
+                  ? const Center(child: Text('No messages yet'))
+                  : ListView.builder(
+                      itemCount: _recentMessages.length,
+                      itemBuilder: (context, index) {
+                        return Card(
+                          child: Padding(
+                            padding: const EdgeInsets.all(8.0),
+                            child: Text(
+                              _recentMessages[index],
+                              style: const TextStyle(fontSize: 12),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
             ),
           ],
         ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
       ),
     );
   }
