@@ -22,10 +22,11 @@ void _processSms(SmsMessage message) async {
 
   if (body == null || sender == null) return;
 
-  // Check if the SMS is from bKash
-  if (body.toLowerCase().contains('bkash') ||
+  // Check if the SMS is from bKash (check sender/address field)
+  if (sender.toLowerCase().contains('bkash') ||
       body.toLowerCase().contains('trxid')) {
-    print('Received bKash SMS: $body');
+    print('Received SMS from: $sender');
+    print('Body: $body');
 
     // Parse amount and transaction ID
     Map<String, dynamic>? data = parseBkashSms(body);
