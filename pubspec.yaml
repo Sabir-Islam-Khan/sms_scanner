@@ -36,7 +36,6 @@ dependencies:
   cupertino_icons: ^1.0.8
   another_telephony: ^0.4.1
   http: ^1.1.0
-  permission_handler: ^11.0.1
 
 dev_dependencies:
   flutter_test:

@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:another_telephony/telephony.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
-import 'package:permission_handler/permission_handler.dart';
 
 void main() {
   runApp(const MyApp());
@@ -10,9 +9,27 @@ void main() {
 
 // Background message handler - must be a top-level function
 @pragma('vm:entry-point')
-void backgroundMessageHandler(SmsMessage message) {
-  // Process the SMS in background
-  _processSms(message);
+void backgroundMessageHandler(SmsMessage message) async {
+  // Process the SMS in background using backgroundInstance
+  String? sender = message.address;
+  String? body = message.body;
+
+  if (body == null || sender == null) return;
+
+  // Check if the SMS is from bKash (check sender/address field)
+  if (sender.toLowerCase().contains('bkash') ||
+      body.toLowerCase().contains('trxid')) {
+    print('Background - Received SMS from: $sender');
+    print('Background - Body: $body');
+
+    // Parse amount and transaction ID
+    Map<String, dynamic>? data = parseBkashSms(body);
+
+    if (data != null) {
+      // Send to API
+      await sendToApi(data['amount'], data['trxId']);
+    }
+  }
 }
 
 // Process SMS and send to API
@@ -129,11 +146,11 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   Future<void> _requestPermissions() async {
-    // Request SMS permissions
-    final smsStatus = await Permission.sms.request();
-    final phoneStatus = await Permission.phone.request();
+    // Request SMS and phone permissions using telephony
+    final bool? permissionsGranted =
+        await telephony.requestPhoneAndSmsPermissions;
 
-    if (smsStatus.isGranted && phoneStatus.isGranted) {
+    if (permissionsGranted != null && permissionsGranted) {
       setState(() {
         _permissionsGranted = true;
         _status = 'Permissions granted. Listening for bKash SMS...';
